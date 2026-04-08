@@ -88,9 +88,9 @@ class ArcAgent:
     def solve_2546ccf6_mirror_richer_segment(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
         """
         Solve 2546ccf6-like tasks:
-        on grids split by full separator rows, for each non-separator color choose the row-segment
-        where it appears most; mirror that segment vertically into other segments containing the same color
-        with fewer pixels.
+        split by full separator rows; for adjacent row-segments where one segment's color set
+        is a strict subset of the other's, copy a vertical flip of the richer segment into the
+        poorer one (non-separator columns only).
         """
         rows, cols = grid.shape
 
@@ -102,44 +102,63 @@ class ArcAgent:
         sep = next(iter(sep_candidates))
 
         divider_rows = [r for r in range(rows) if np.all(grid[r, :] == sep)]
-        segments = []
+        segments: list[tuple[int, int]] = []
         prev = -1
         for dr in divider_rows + [rows]:
             r0, r1 = prev + 1, dr
             if r0 < r1:
                 segments.append((r0, r1))
             prev = dr
-        if not segments:
+        if len(segments) < 2:
             return None
 
+        sep_cols = {c for c in range(cols) if np.all(grid[:, c] == sep)}
         out = grid.copy()
-        colors = [int(c) for c in np.unique(grid) if int(c) not in (0, sep)]
 
-        for color in colors:
-            seg_counts = []
-            for i, (r0, r1) in enumerate(segments):
-                cnt = int(np.sum(grid[r0:r1, :] == color))
-                if cnt > 0:
-                    seg_counts.append((i, cnt))
-            if len(seg_counts) < 2:
+        def color_set(r0: int, r1: int) -> set[int]:
+            vals = {int(v) for v in np.unique(grid[r0:r1, :])}
+            vals.discard(0)
+            vals.discard(sep)
+            return vals
+
+        for i in range(len(segments) - 1):
+            a0, a1 = segments[i]
+            b0, b1 = segments[i + 1]
+            if (a1 - a0) != (b1 - b0):
                 continue
 
-            src_i, src_cnt = max(seg_counts, key=lambda x: x[1])
-            src_r0, src_r1 = segments[src_i]
-            src_block = grid[src_r0:src_r1, :]
-            src_flip = np.flipud(src_block)
+            set_a = color_set(a0, a1)
+            set_b = color_set(b0, b1)
+            if not set_a and not set_b:
+                continue
 
-            for tgt_i, tgt_cnt in seg_counts:
-                if tgt_i == src_i or tgt_cnt >= src_cnt:
+            src = None
+            tgt = None
+            cnt_a = int(np.sum((grid[a0:a1, :] != 0) & (grid[a0:a1, :] != sep)))
+            cnt_b = int(np.sum((grid[b0:b1, :] != 0) & (grid[b0:b1, :] != sep)))
+
+            if set_a == set_b and set_a:
+                if cnt_a > cnt_b:
+                    src, tgt = (a0, a1), (b0, b1)
+                elif cnt_b > cnt_a:
+                    src, tgt = (b0, b1), (a0, a1)
+                else:
                     continue
-                tgt_r0, tgt_r1 = segments[tgt_i]
-                if (tgt_r1 - tgt_r0) != src_flip.shape[0]:
+            elif set_a < set_b and set_a:  # A strict subset of B, A not empty
+                src, tgt = (b0, b1), (a0, a1)
+            elif set_b < set_a and set_b:  # B strict subset of A, B not empty
+                src, tgt = (a0, a1), (b0, b1)
+            else:
+                continue
+
+            sr0, sr1 = src
+            tr0, tr1 = tgt
+            src_flip = np.flipud(grid[sr0:sr1, :])
+
+            for c in range(cols):
+                if c in sep_cols:
                     continue
-                # copy only non-separator columns; keep separator columns intact
-                for c in range(cols):
-                    if np.all(grid[:, c] == sep):
-                        continue
-                    out[tgt_r0:tgt_r1, c] = src_flip[:, c]
+                out[tr0:tr1, c] = src_flip[:, c]
 
         return out
 
