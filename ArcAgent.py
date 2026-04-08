@@ -11,11 +11,84 @@ class ArcAgent:
 
     def make_predictions(self, arc_problem: ArcProblem) -> list[np.ndarray]:
         test_input = arc_problem.test_set().get_input_data().data()
+        predictions: list[np.ndarray] = []
 
-        prediction = self._fill_closed_regions_with_hint_majority(test_input)
-        return [prediction]
+        strategies = [
+            self.solve_31d5ba1a_xor_halves,
+            self._fill_closed_regions_with_hint_majority,
+        ]
 
-    def _fill_closed_regions_with_hint_majority(self, grid: np.ndarray) -> np.ndarray:
+        for strategy in strategies:
+            if not self._validate_on_training(strategy, arc_problem):
+                continue
+            candidate = strategy(test_input, arc_problem)
+            if candidate is None:
+                continue
+            if not any(np.array_equal(candidate, existing) for existing in predictions):
+                predictions.append(candidate)
+            if len(predictions) >= 3:
+                break
+
+        if not predictions:
+            predictions.append(test_input.copy())
+
+        return predictions[:3]
+
+    def _validate_on_training(self, strategy, arc_problem: ArcProblem) -> bool:
+        """Use only strategies that exactly match every training example for this puzzle."""
+        for train_set in arc_problem.training_set():
+            train_in = train_set.get_input_data().data()
+            expected = train_set.get_output_data().data()
+            produced = strategy(train_in, arc_problem)
+            if produced is None or not np.array_equal(produced, expected):
+                return False
+        return True
+
+    def solve_31d5ba1a_xor_halves(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve pattern like 31d5ba1a:
+        - Input is two equal-height blocks stacked vertically.
+        - Treat non-zero cells in the top and bottom block as binary masks.
+        - Output is the XOR of those masks using the learned output color.
+
+        Why this works for 31d5ba1a:
+        the top 3 rows (color 9) and bottom 3 rows (color 4) are occupancy masks;
+        output marks locations where exactly one of the two masks has a filled cell.
+        """
+        rows, cols = grid.shape
+        if rows % 2 != 0:
+            return None
+
+        half = rows // 2
+        top = grid[:half, :]
+        bottom = grid[half:, :]
+
+        top_mask = top != 0
+        bottom_mask = bottom != 0
+        xor_mask = np.logical_xor(top_mask, bottom_mask)
+
+        output_color = self._learn_nonzero_output_color(arc_problem)
+        if output_color is None:
+            return None
+
+        out = np.zeros((half, cols), dtype=int)
+        out[xor_mask] = output_color
+        return out
+
+    def _learn_nonzero_output_color(self, arc_problem: ArcProblem) -> int | None:
+        """Infer the unique non-zero output color from training outputs."""
+        colors = set()
+        for train_set in arc_problem.training_set():
+            out = train_set.get_output_data().data()
+            for color in np.unique(out):
+                color = int(color)
+                if color != 0:
+                    colors.add(color)
+        if len(colors) != 1:
+            return None
+        return next(iter(colors))
+
+    def _fill_closed_regions_with_hint_majority(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray:
         """
         Strategy for tasks like 4b6b68e5:
         - find large connected single-color components that act as closed outlines
