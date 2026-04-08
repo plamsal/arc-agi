@@ -14,6 +14,7 @@ class ArcAgent:
         predictions: list[np.ndarray] = []
 
         strategies = [
+            self.solve_bbb1b8b6_overlay_if_disjoint,
             self.solve_992798f6_dominant_axis_path,
             self.solve_18419cfa_reflect_in_frames,
             self.solve_2546ccf6_mirror_richer_segment,
@@ -53,6 +54,34 @@ class ArcAgent:
 
 
 
+
+    def solve_bbb1b8b6_overlay_if_disjoint(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve bbb1b8b6-like tasks:
+        split around the middle separator column, then either:
+        - return the left block unchanged if left/right non-zero pixels overlap, or
+        - overlay right colors onto zero cells of the left block when they are disjoint.
+        """
+        rows, cols = grid.shape
+        sep_cols = [c for c in range(cols) if np.all(grid[:, c] == grid[0, c]) and int(grid[0, c]) != 0]
+        mid_candidates = [c for c in sep_cols if c == (cols - 1 - c)]
+        if len(mid_candidates) != 1:
+            return None
+        sep = mid_candidates[0]
+
+        left = grid[:, :sep]
+        right = grid[:, sep + 1 :]
+        if left.shape != right.shape:
+            return None
+
+        overlap = np.any((left != 0) & (right != 0))
+        if overlap:
+            return left.copy()
+
+        out = left.copy()
+        mask = (out == 0) & (right != 0)
+        out[mask] = right[mask]
+        return out
 
     def solve_992798f6_dominant_axis_path(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
         """
