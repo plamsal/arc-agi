@@ -14,6 +14,7 @@ class ArcAgent:
         predictions: list[np.ndarray] = []
 
         strategies = [
+            self.solve_992798f6_dominant_axis_path,
             self.solve_18419cfa_reflect_in_frames,
             self.solve_2546ccf6_mirror_richer_segment,
             self.solve_195ba7dc_or_halves,
@@ -52,6 +53,77 @@ class ArcAgent:
 
 
 
+
+    def solve_992798f6_dominant_axis_path(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 992798f6-like tasks:
+        two singleton endpoint colors are connected with a third color path.
+        Build path from a cell adjacent to the start endpoint toward a cell adjacent to
+        the end endpoint, moving first along the dominant axis and then diagonally.
+        """
+        nonzero = [int(c) for c in np.unique(grid) if int(c) != 0]
+        if len(nonzero) != 2:
+            return None
+
+        pos_by_color = {}
+        for c in nonzero:
+            pts = np.argwhere(grid == c)
+            if len(pts) != 1:
+                return None
+            pos_by_color[c] = tuple(map(int, pts[0]))
+
+        # In this family, start endpoint is color 2, end endpoint is color 1.
+        if 2 in pos_by_color and 1 in pos_by_color:
+            start = pos_by_color[2]
+            end = pos_by_color[1]
+        else:
+            # fallback deterministic ordering
+            c_sorted = sorted(nonzero)
+            start = pos_by_color[c_sorted[-1]]
+            end = pos_by_color[c_sorted[0]]
+
+        path_color = self._learn_added_output_color(arc_problem)
+        if path_color is None:
+            return None
+
+        r0, c0 = start
+        r1, c1 = end
+        dr = 1 if r1 > r0 else -1 if r1 < r0 else 0
+        dc = 1 if c1 > c0 else -1 if c1 < c0 else 0
+
+        cur_r, cur_c = r0 + dr, c0 + dc
+        tgt_r, tgt_c = r1 - dr, c1 - dc
+
+        out = grid.copy()
+
+        rows, cols = grid.shape
+        def in_bounds(r: int, c: int) -> bool:
+            return 0 <= r < rows and 0 <= c < cols
+
+        while (cur_r, cur_c) != (tgt_r, tgt_c):
+            if in_bounds(cur_r, cur_c) and int(out[cur_r, cur_c]) == 0:
+                out[cur_r, cur_c] = path_color
+
+            rem_r = tgt_r - cur_r
+            rem_c = tgt_c - cur_c
+            abs_r = abs(rem_r)
+            abs_c = abs(rem_c)
+
+            step_r = 0 if rem_r == 0 else (1 if rem_r > 0 else -1)
+            step_c = 0 if rem_c == 0 else (1 if rem_c > 0 else -1)
+
+            if abs_r > abs_c:
+                cur_r += step_r
+            elif abs_c > abs_r:
+                cur_c += step_c
+            else:
+                cur_r += step_r
+                cur_c += step_c
+
+        if in_bounds(tgt_r, tgt_c) and int(out[tgt_r, tgt_c]) == 0:
+            out[tgt_r, tgt_c] = path_color
+
+        return out
 
     def solve_195ba7dc_or_halves(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
         """
