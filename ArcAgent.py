@@ -14,6 +14,8 @@ class ArcAgent:
         predictions: list[np.ndarray] = []
 
         strategies = [
+            self.solve_81c0276b_frequency_histogram,
+            self.solve_67c52801_pack_rectangles_into_slots,
             self.solve_60a26a3e_connect_crosses,
             self.solve_31d5ba1a_xor_halves,
             self._fill_closed_regions_with_hint_majority,
@@ -45,6 +47,162 @@ class ArcAgent:
                 return False
         return True
 
+
+
+    def solve_67c52801_pack_rectangles_into_slots(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve pattern like 67c52801:
+        - Bottom row is a full "base" color.
+        - Row above has base-colored separators that define horizontal slots (zero-runs).
+        - Colored objects above are packed into those slots as filled rectangles, bottom-aligned
+          to the separator row; rectangles may rotate to match slot width.
+        """
+        rows, cols = grid.shape
+        if rows < 2:
+            return None
+
+        base_row = grid[rows - 1, :]
+        if len(set(map(int, base_row))) != 1:
+            return None
+        base_color = int(base_row[0])
+
+        slot_row = grid[rows - 2, :]
+        slots: list[tuple[int, int]] = []
+        c = 0
+        while c < cols:
+            if int(slot_row[c]) == 0:
+                start = c
+                while c < cols and int(slot_row[c]) == 0:
+                    c += 1
+                slots.append((start, c - 1))
+            else:
+                c += 1
+
+        if not slots:
+            return None
+
+        # Find connected non-base objects in rows above the slot row.
+        work = grid[: rows - 2, :]
+        seen = np.zeros(work.shape, dtype=bool)
+        objects: list[tuple[int, int, int]] = []  # (color, area, max_height)
+        dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+        for r in range(work.shape[0]):
+            for cc in range(work.shape[1]):
+                val = int(work[r, cc])
+                if val == 0 or val == base_color or seen[r, cc]:
+                    continue
+                q = deque([(r, cc)])
+                seen[r, cc] = True
+                cells = []
+                while q:
+                    cr, ccc = q.popleft()
+                    cells.append((cr, ccc))
+                    for dr, dc in dirs:
+                        nr, nc = cr + dr, ccc + dc
+                        if 0 <= nr < work.shape[0] and 0 <= nc < work.shape[1] and not seen[nr, nc] and int(work[nr, nc]) == val:
+                            seen[nr, nc] = True
+                            q.append((nr, nc))
+                area = len(cells)
+                rmin = min(r0 for r0, _ in cells)
+                rmax = max(r0 for r0, _ in cells)
+                cmin = min(c0 for _, c0 in cells)
+                cmax = max(c0 for _, c0 in cells)
+                h = rmax - rmin + 1
+                w = cmax - cmin + 1
+                # store both dims in max_height placeholder as encoded tuple via list append below
+                objects.append((val, area, h * 1000 + w))
+
+        if len(objects) != len(slots):
+            return None
+
+        # Sort by area (small to large) to match slot order in training behavior.
+        objects.sort(key=lambda x: (x[1], x[0]))
+
+        out = np.zeros_like(grid)
+        out[rows - 1, :] = base_color
+        out[rows - 2, :] = slot_row
+
+        for (color, area, enc_hw), (start, end) in zip(objects, slots):
+            h0, w0 = divmod(enc_hw, 1000)
+            slot_w = end - start + 1
+
+            candidates = []
+            for w in {w0, h0}:
+                if w > 0 and area % w == 0:
+                    h = area // w
+                    candidates.append((w, h))
+
+            picked = None
+            for w, h in candidates:
+                if w == slot_w and h <= rows - 1:
+                    picked = (w, h)
+                    break
+            if picked is None:
+                return None
+
+            w, h = picked
+            left = start
+            top = (rows - 2) - (h - 1)
+            bottom = rows - 2
+            out[top : bottom + 1, left : left + w] = color
+
+        return out
+
+    def solve_81c0276b_frequency_histogram(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve pattern like 81c0276b:
+        - Detect separator color that forms full divider rows and columns.
+        - Partition into cell blocks between dividers.
+        - Count non-separator colors appearing in cells.
+        - Build compact histogram: one row per color, sorted by increasing frequency,
+          each row filled left-to-right with that color repeated `count` times.
+        """
+        rows, cols = grid.shape
+
+        full_row_colors = [int(grid[r, 0]) for r in range(rows) if np.all(grid[r, :] == grid[r, 0]) and int(grid[r, 0]) != 0]
+        full_col_colors = [int(grid[0, c]) for c in range(cols) if np.all(grid[:, c] == grid[0, c]) and int(grid[0, c]) != 0]
+        sep_candidates = set(full_row_colors) & set(full_col_colors)
+        if len(sep_candidates) != 1:
+            return None
+        sep = next(iter(sep_candidates))
+
+        divider_rows = [r for r in range(rows) if np.all(grid[r, :] == sep)]
+        divider_cols = [c for c in range(cols) if np.all(grid[:, c] == sep)]
+
+        row_cuts = [-1] + divider_rows + [rows]
+        col_cuts = [-1] + divider_cols + [cols]
+
+        counts: dict[int, int] = {}
+        for ri in range(len(row_cuts) - 1):
+            r0, r1 = row_cuts[ri] + 1, row_cuts[ri + 1]
+            if r0 >= r1:
+                continue
+            for ci in range(len(col_cuts) - 1):
+                c0, c1 = col_cuts[ci] + 1, col_cuts[ci + 1]
+                if c0 >= c1:
+                    continue
+                cell = grid[r0:r1, c0:c1]
+                vals = [int(v) for v in np.unique(cell) if int(v) != 0 and int(v) != sep]
+                if not vals:
+                    continue
+                if len(vals) != 1:
+                    return None
+                color = vals[0]
+                counts[color] = counts.get(color, 0) + 1
+
+        if not counts:
+            return None
+
+        items = sorted(counts.items(), key=lambda kv: (kv[1], kv[0]))
+        out_h = len(items)
+        out_w = max(cnt for _, cnt in items)
+        out = np.zeros((out_h, out_w), dtype=int)
+
+        for r, (color, cnt) in enumerate(items):
+            out[r, :cnt] = color
+
+        return out
 
     def solve_60a26a3e_connect_crosses(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
         """
