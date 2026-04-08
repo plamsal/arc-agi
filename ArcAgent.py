@@ -14,6 +14,9 @@ class ArcAgent:
         predictions: list[np.ndarray] = []
 
         strategies = [
+            self.solve_18419cfa_reflect_in_frames,
+            self.solve_2546ccf6_mirror_richer_segment,
+            self.solve_195ba7dc_or_halves,
             self.solve_81c0276b_frequency_histogram,
             self.solve_67c52801_pack_rectangles_into_slots,
             self.solve_60a26a3e_connect_crosses,
@@ -48,6 +51,156 @@ class ArcAgent:
         return True
 
 
+
+
+    def solve_195ba7dc_or_halves(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 195ba7dc-like tasks:
+        split by a single full-height separator column, then OR the two side masks
+        and render result using output foreground color.
+        """
+        rows, cols = grid.shape
+        sep_cols = [
+            c
+            for c in range(cols)
+            if len(set(map(int, grid[:, c]))) == 1 and int(grid[0, c]) != 0 and c == (cols - 1 - c)
+        ]
+        if len(sep_cols) != 1:
+            return None
+        sep = sep_cols[0]
+        left = grid[:, :sep]
+        right = grid[:, sep + 1 :]
+        if left.shape[1] != right.shape[1]:
+            return None
+
+        left_mask = left != 0
+        right_mask = right != 0
+        out_mask = np.logical_or(left_mask, right_mask)
+
+        out_color = self._learn_nonzero_output_color(arc_problem)
+        if out_color is None:
+            return None
+
+        out = np.zeros_like(left, dtype=int)
+        out[out_mask] = out_color
+        return out
+
+    def solve_2546ccf6_mirror_richer_segment(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 2546ccf6-like tasks:
+        on grids split by full separator rows, for each non-separator color choose the row-segment
+        where it appears most; mirror that segment vertically into other segments containing the same color
+        with fewer pixels.
+        """
+        rows, cols = grid.shape
+
+        full_row_colors = [int(grid[r, 0]) for r in range(rows) if np.all(grid[r, :] == grid[r, 0]) and int(grid[r, 0]) != 0]
+        full_col_colors = [int(grid[0, c]) for c in range(cols) if np.all(grid[:, c] == grid[0, c]) and int(grid[0, c]) != 0]
+        sep_candidates = set(full_row_colors) & set(full_col_colors)
+        if len(sep_candidates) != 1:
+            return None
+        sep = next(iter(sep_candidates))
+
+        divider_rows = [r for r in range(rows) if np.all(grid[r, :] == sep)]
+        segments = []
+        prev = -1
+        for dr in divider_rows + [rows]:
+            r0, r1 = prev + 1, dr
+            if r0 < r1:
+                segments.append((r0, r1))
+            prev = dr
+        if not segments:
+            return None
+
+        out = grid.copy()
+        colors = [int(c) for c in np.unique(grid) if int(c) not in (0, sep)]
+
+        for color in colors:
+            seg_counts = []
+            for i, (r0, r1) in enumerate(segments):
+                cnt = int(np.sum(grid[r0:r1, :] == color))
+                if cnt > 0:
+                    seg_counts.append((i, cnt))
+            if len(seg_counts) < 2:
+                continue
+
+            src_i, src_cnt = max(seg_counts, key=lambda x: x[1])
+            src_r0, src_r1 = segments[src_i]
+            src_block = grid[src_r0:src_r1, :]
+            src_flip = np.flipud(src_block)
+
+            for tgt_i, tgt_cnt in seg_counts:
+                if tgt_i == src_i or tgt_cnt >= src_cnt:
+                    continue
+                tgt_r0, tgt_r1 = segments[tgt_i]
+                if (tgt_r1 - tgt_r0) != src_flip.shape[0]:
+                    continue
+                # copy only non-separator columns; keep separator columns intact
+                for c in range(cols):
+                    if np.all(grid[:, c] == sep):
+                        continue
+                    out[tgt_r0:tgt_r1, c] = src_flip[:, c]
+
+        return out
+
+    def solve_18419cfa_reflect_in_frames(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 18419cfa-like tasks:
+        for each connected frame component (most common non-zero color), reflect interior pattern color
+        across frame bbox center (horizontal + vertical symmetry completion).
+        """
+        nz = [int(c) for c in np.unique(grid) if int(c) != 0]
+        if len(nz) < 2:
+            return None
+
+        # infer frame color as the most frequent non-zero; fill color is the other one in training tasks
+        counts = {c: int(np.sum(grid == c)) for c in nz}
+        frame_color = max(counts.items(), key=lambda kv: kv[1])[0]
+        fill_candidates = [c for c in nz if c != frame_color]
+        if len(fill_candidates) != 1:
+            return None
+        fill_color = fill_candidates[0]
+
+        rows, cols = grid.shape
+        seen = np.zeros((rows, cols), dtype=bool)
+        dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        out = grid.copy()
+
+        for r in range(rows):
+            for c in range(cols):
+                if seen[r, c] or int(grid[r, c]) != frame_color:
+                    continue
+                q = deque([(r, c)])
+                seen[r, c] = True
+                comp = []
+                while q:
+                    cr, cc = q.popleft()
+                    comp.append((cr, cc))
+                    for dr, dc in dirs:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and not seen[nr, nc] and int(grid[nr, nc]) == frame_color:
+                            seen[nr, nc] = True
+                            q.append((nr, nc))
+
+                if len(comp) < 10:
+                    continue
+
+                rmin = min(rr for rr, _ in comp)
+                rmax = max(rr for rr, _ in comp)
+                cmin = min(cc for _, cc in comp)
+                cmax = max(cc for _, cc in comp)
+
+                for rr in range(rmin, rmax + 1):
+                    for cc in range(cmin, cmax + 1):
+                        if int(grid[rr, cc]) != fill_color:
+                            continue
+                        rr_m = rmin + rmax - rr
+                        cc_m = cmin + cmax - cc
+                        for tr, tc in [(rr, cc), (rr_m, cc), (rr, cc_m), (rr_m, cc_m)]:
+                            if rmin <= tr <= rmax and cmin <= tc <= cmax and int(out[tr, tc]) != frame_color:
+                                out[tr, tc] = fill_color
+
+        return out
 
     def solve_67c52801_pack_rectangles_into_slots(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
         """
