@@ -1,51 +1,761 @@
+from collections import deque
+
 import numpy as np
 
 from ArcProblem import ArcProblem
-from ArcData import ArcData
-from ArcSet import ArcSet
 
 
 class ArcAgent:
     def __init__(self):
-        """
-        You may add additional variables to this init. Be aware that it gets called only once
-        and then the solve method will get called several times.
-        """
         pass
 
     def make_predictions(self, arc_problem: ArcProblem) -> list[np.ndarray]:
-        """
-        Write the code in this method
-        to solve the incoming ArcProblem.
-
-        You can add up to THREE (3) the predictions to the
-        predictions list provided below that you need to
-        return at the end of this method.
-
-        In the Autograder, the test data output in the arc problem will be set to None
-        so your agent cannot peek at the answer.
-
-        Also, you shouldn't add more than 3 predictions to the list as
-        that is considered an ERROR and the test will be automatically
-        marked as incorrect.
-        """
-
-        predictions: list[np.ndarray] = list()
-
-        # I want the test input data from the test set
-
         test_input = arc_problem.test_set().get_input_data().data()
+        predictions: list[np.ndarray] = []
 
-        # return the copy
+        strategies = [
+            self.solve_28e73c20_spiral_maze,
+            self.solve_bbb1b8b6_overlay_if_disjoint,
+            self.solve_992798f6_dominant_axis_path,
+            self.solve_18419cfa_reflect_in_frames,
+            self.solve_2546ccf6_mirror_richer_segment,
+            self.solve_195ba7dc_or_halves,
+            self.solve_81c0276b_frequency_histogram,
+            self.solve_67c52801_pack_rectangles_into_slots,
+            self.solve_60a26a3e_connect_crosses,
+            self.solve_31d5ba1a_xor_halves,
+            self._fill_closed_regions_with_hint_majority,
+        ]
 
-        output = test_input.copy()
+        for strategy in strategies:
+            if not self._validate_on_training(strategy, arc_problem):
+                continue
+            candidate = strategy(test_input, arc_problem)
+            if candidate is None:
+                continue
+            if not any(np.array_equal(candidate, existing) for existing in predictions):
+                predictions.append(candidate)
+            if len(predictions) >= 3:
+                break
 
-        '''
-        The next 2 lines are only an example of how to populate the predictions list.
-        This will just be an empty answer the size of the input data;
-        delete it before you start adding your own predictions.
-        '''
-        # output = np.zeros_like(arc_problem.test_set().get_input_data().data())
-        predictions.append(output)
+        if not predictions:
+            predictions.append(test_input.copy())
 
-        return predictions
+        return predictions[:3]
+
+    def _validate_on_training(self, strategy, arc_problem: ArcProblem) -> bool:
+        """Use only strategies that exactly match every training example for this puzzle."""
+        for train_set in arc_problem.training_set():
+            train_in = train_set.get_input_data().data()
+            expected = train_set.get_output_data().data()
+            produced = strategy(train_in, arc_problem)
+            if produced is None or not np.array_equal(produced, expected):
+                return False
+        return True
+
+
+
+
+    def solve_28e73c20_spiral_maze(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 28e73c20-like tasks (blank input -> deterministic spiral maze pattern).
+        Draw a single-pixel-width spiral path with one-cell corridors using color 3.
+        """
+        if np.any(grid != 0):
+            return None
+        rows, cols = grid.shape
+        if rows != cols:
+            return None
+
+        n = rows
+        out = np.zeros((n, n), dtype=int)
+        path_color = self._learn_nonzero_output_color(arc_problem)
+        if path_color is None:
+            path_color = 3
+
+        dirs = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+        d = 0
+        r = c = 0
+        out[r, c] = path_color
+
+        def can_step(nr: int, nc: int, pr: int, pc: int) -> bool:
+            if not (0 <= nr < n and 0 <= nc < n):
+                return False
+            if int(out[nr, nc]) != 0:
+                return False
+            # Keep one-cell corridor from existing path (except the previous cell).
+            for dr, dc in dirs:
+                ar, ac = nr + dr, nc + dc
+                if 0 <= ar < n and 0 <= ac < n and int(out[ar, ac]) == path_color and not (ar == pr and ac == pc):
+                    return False
+            return True
+
+        while True:
+            moved = False
+            for nd in (d, (d + 1) % 4):
+                dr, dc = dirs[nd]
+                nr, nc = r + dr, c + dc
+                if can_step(nr, nc, r, c):
+                    d = nd
+                    r, c = nr, nc
+                    out[r, c] = path_color
+                    moved = True
+                    break
+            if not moved:
+                break
+
+        # Even-sized grids in this family include one extra center-left link cell.
+        if n % 2 == 0:
+            out[n // 2, n // 2 - 1] = path_color
+
+        return out
+
+    def solve_bbb1b8b6_overlay_if_disjoint(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve bbb1b8b6-like tasks:
+        split around the middle separator column, then either:
+        - return the left block unchanged if left/right non-zero pixels overlap, or
+        - overlay right colors onto zero cells of the left block when they are disjoint.
+        """
+        rows, cols = grid.shape
+        sep_cols = [c for c in range(cols) if np.all(grid[:, c] == grid[0, c]) and int(grid[0, c]) != 0]
+        mid_candidates = [c for c in sep_cols if c == (cols - 1 - c)]
+        if len(mid_candidates) != 1:
+            return None
+        sep = mid_candidates[0]
+
+        left = grid[:, :sep]
+        right = grid[:, sep + 1 :]
+        if left.shape != right.shape:
+            return None
+
+        overlap = np.any((left != 0) & (right != 0))
+        if overlap:
+            return left.copy()
+
+        out = left.copy()
+        mask = (out == 0) & (right != 0)
+        out[mask] = right[mask]
+        return out
+
+    def solve_992798f6_dominant_axis_path(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 992798f6-like tasks:
+        two singleton endpoint colors are connected with a third color path.
+        Build path from a cell adjacent to the start endpoint toward a cell adjacent to
+        the end endpoint, moving first along the dominant axis and then diagonally.
+        """
+        nonzero = [int(c) for c in np.unique(grid) if int(c) != 0]
+        if len(nonzero) != 2:
+            return None
+
+        pos_by_color = {}
+        for c in nonzero:
+            pts = np.argwhere(grid == c)
+            if len(pts) != 1:
+                return None
+            pos_by_color[c] = tuple(map(int, pts[0]))
+
+        # In this family, start endpoint is color 2, end endpoint is color 1.
+        if 2 in pos_by_color and 1 in pos_by_color:
+            start = pos_by_color[2]
+            end = pos_by_color[1]
+        else:
+            # fallback deterministic ordering
+            c_sorted = sorted(nonzero)
+            start = pos_by_color[c_sorted[-1]]
+            end = pos_by_color[c_sorted[0]]
+
+        path_color = self._learn_added_output_color(arc_problem)
+        if path_color is None:
+            return None
+
+        r0, c0 = start
+        r1, c1 = end
+        dr = 1 if r1 > r0 else -1 if r1 < r0 else 0
+        dc = 1 if c1 > c0 else -1 if c1 < c0 else 0
+
+        cur_r, cur_c = r0 + dr, c0 + dc
+        tgt_r, tgt_c = r1 - dr, c1 - dc
+
+        out = grid.copy()
+
+        rows, cols = grid.shape
+        def in_bounds(r: int, c: int) -> bool:
+            return 0 <= r < rows and 0 <= c < cols
+
+        while (cur_r, cur_c) != (tgt_r, tgt_c):
+            if in_bounds(cur_r, cur_c) and int(out[cur_r, cur_c]) == 0:
+                out[cur_r, cur_c] = path_color
+
+            rem_r = tgt_r - cur_r
+            rem_c = tgt_c - cur_c
+            abs_r = abs(rem_r)
+            abs_c = abs(rem_c)
+
+            step_r = 0 if rem_r == 0 else (1 if rem_r > 0 else -1)
+            step_c = 0 if rem_c == 0 else (1 if rem_c > 0 else -1)
+
+            if abs_r > abs_c:
+                cur_r += step_r
+            elif abs_c > abs_r:
+                cur_c += step_c
+            else:
+                cur_r += step_r
+                cur_c += step_c
+
+        if in_bounds(tgt_r, tgt_c) and int(out[tgt_r, tgt_c]) == 0:
+            out[tgt_r, tgt_c] = path_color
+
+        return out
+
+    def solve_195ba7dc_or_halves(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 195ba7dc-like tasks:
+        split by a single full-height separator column, then OR the two side masks
+        and render result using output foreground color.
+        """
+        rows, cols = grid.shape
+        sep_cols = [
+            c
+            for c in range(cols)
+            if len(set(map(int, grid[:, c]))) == 1 and int(grid[0, c]) != 0 and c == (cols - 1 - c)
+        ]
+        if len(sep_cols) != 1:
+            return None
+        sep = sep_cols[0]
+        left = grid[:, :sep]
+        right = grid[:, sep + 1 :]
+        if left.shape[1] != right.shape[1]:
+            return None
+
+        left_mask = left != 0
+        right_mask = right != 0
+        out_mask = np.logical_or(left_mask, right_mask)
+
+        out_color = self._learn_nonzero_output_color(arc_problem)
+        if out_color is None:
+            return None
+
+        out = np.zeros_like(left, dtype=int)
+        out[out_mask] = out_color
+        return out
+
+    def solve_2546ccf6_mirror_richer_segment(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 2546ccf6-like tasks:
+        split by full separator rows; for adjacent row-segments where one segment's color set
+        is a strict subset of the other's, copy a vertical flip of the richer segment into the
+        poorer one (non-separator columns only).
+        """
+        rows, cols = grid.shape
+
+        full_row_colors = [int(grid[r, 0]) for r in range(rows) if np.all(grid[r, :] == grid[r, 0]) and int(grid[r, 0]) != 0]
+        full_col_colors = [int(grid[0, c]) for c in range(cols) if np.all(grid[:, c] == grid[0, c]) and int(grid[0, c]) != 0]
+        sep_candidates = set(full_row_colors) & set(full_col_colors)
+        if len(sep_candidates) != 1:
+            return None
+        sep = next(iter(sep_candidates))
+
+        divider_rows = [r for r in range(rows) if np.all(grid[r, :] == sep)]
+        segments: list[tuple[int, int]] = []
+        prev = -1
+        for dr in divider_rows + [rows]:
+            r0, r1 = prev + 1, dr
+            if r0 < r1:
+                segments.append((r0, r1))
+            prev = dr
+        if len(segments) < 2:
+            return None
+
+        sep_cols = {c for c in range(cols) if np.all(grid[:, c] == sep)}
+        out = grid.copy()
+
+        def color_set(r0: int, r1: int) -> set[int]:
+            vals = {int(v) for v in np.unique(grid[r0:r1, :])}
+            vals.discard(0)
+            vals.discard(sep)
+            return vals
+
+        for i in range(len(segments) - 1):
+            a0, a1 = segments[i]
+            b0, b1 = segments[i + 1]
+            if (a1 - a0) != (b1 - b0):
+                continue
+
+            set_a = color_set(a0, a1)
+            set_b = color_set(b0, b1)
+            if not set_a and not set_b:
+                continue
+
+            src = None
+            tgt = None
+            cnt_a = int(np.sum((grid[a0:a1, :] != 0) & (grid[a0:a1, :] != sep)))
+            cnt_b = int(np.sum((grid[b0:b1, :] != 0) & (grid[b0:b1, :] != sep)))
+
+            if set_a == set_b and set_a:
+                if cnt_a > cnt_b:
+                    src, tgt = (a0, a1), (b0, b1)
+                elif cnt_b > cnt_a:
+                    src, tgt = (b0, b1), (a0, a1)
+                else:
+                    continue
+            elif set_a < set_b and set_a:  # A strict subset of B, A not empty
+                src, tgt = (b0, b1), (a0, a1)
+            elif set_b < set_a and set_b:  # B strict subset of A, B not empty
+                src, tgt = (a0, a1), (b0, b1)
+            else:
+                continue
+
+            sr0, sr1 = src
+            tr0, tr1 = tgt
+            src_flip = np.flipud(grid[sr0:sr1, :])
+
+            for c in range(cols):
+                if c in sep_cols:
+                    continue
+                out[tr0:tr1, c] = src_flip[:, c]
+
+        return out
+
+    def solve_18419cfa_reflect_in_frames(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 18419cfa-like tasks:
+        for each connected frame component (most common non-zero color), reflect interior pattern color
+        across frame bbox center (horizontal + vertical symmetry completion).
+        """
+        nz = [int(c) for c in np.unique(grid) if int(c) != 0]
+        if len(nz) < 2:
+            return None
+
+        # infer frame color as the most frequent non-zero; fill color is the other one in training tasks
+        counts = {c: int(np.sum(grid == c)) for c in nz}
+        frame_color = max(counts.items(), key=lambda kv: kv[1])[0]
+        fill_candidates = [c for c in nz if c != frame_color]
+        if len(fill_candidates) != 1:
+            return None
+        fill_color = fill_candidates[0]
+
+        rows, cols = grid.shape
+        seen = np.zeros((rows, cols), dtype=bool)
+        dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        out = grid.copy()
+
+        for r in range(rows):
+            for c in range(cols):
+                if seen[r, c] or int(grid[r, c]) != frame_color:
+                    continue
+                q = deque([(r, c)])
+                seen[r, c] = True
+                comp = []
+                while q:
+                    cr, cc = q.popleft()
+                    comp.append((cr, cc))
+                    for dr, dc in dirs:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and not seen[nr, nc] and int(grid[nr, nc]) == frame_color:
+                            seen[nr, nc] = True
+                            q.append((nr, nc))
+
+                if len(comp) < 10:
+                    continue
+
+                rmin = min(rr for rr, _ in comp)
+                rmax = max(rr for rr, _ in comp)
+                cmin = min(cc for _, cc in comp)
+                cmax = max(cc for _, cc in comp)
+
+                for rr in range(rmin, rmax + 1):
+                    for cc in range(cmin, cmax + 1):
+                        if int(grid[rr, cc]) != fill_color:
+                            continue
+                        rr_m = rmin + rmax - rr
+                        cc_m = cmin + cmax - cc
+                        for tr, tc in [(rr, cc), (rr_m, cc), (rr, cc_m), (rr_m, cc_m)]:
+                            if rmin <= tr <= rmax and cmin <= tc <= cmax and int(out[tr, tc]) != frame_color:
+                                out[tr, tc] = fill_color
+
+        return out
+
+    def solve_67c52801_pack_rectangles_into_slots(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve pattern like 67c52801:
+        - Bottom row is a full "base" color.
+        - Row above has base-colored separators that define horizontal slots (zero-runs).
+        - Colored objects above are packed into those slots as filled rectangles, bottom-aligned
+          to the separator row; rectangles may rotate to match slot width.
+        """
+        rows, cols = grid.shape
+        if rows < 2:
+            return None
+
+        base_row = grid[rows - 1, :]
+        if len(set(map(int, base_row))) != 1:
+            return None
+        base_color = int(base_row[0])
+
+        slot_row = grid[rows - 2, :]
+        slots: list[tuple[int, int]] = []
+        c = 0
+        while c < cols:
+            if int(slot_row[c]) == 0:
+                start = c
+                while c < cols and int(slot_row[c]) == 0:
+                    c += 1
+                slots.append((start, c - 1))
+            else:
+                c += 1
+
+        if not slots:
+            return None
+
+        # Find connected non-base objects in rows above the slot row.
+        work = grid[: rows - 2, :]
+        seen = np.zeros(work.shape, dtype=bool)
+        objects: list[tuple[int, int, int]] = []  # (color, area, max_height)
+        dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+        for r in range(work.shape[0]):
+            for cc in range(work.shape[1]):
+                val = int(work[r, cc])
+                if val == 0 or val == base_color or seen[r, cc]:
+                    continue
+                q = deque([(r, cc)])
+                seen[r, cc] = True
+                cells = []
+                while q:
+                    cr, ccc = q.popleft()
+                    cells.append((cr, ccc))
+                    for dr, dc in dirs:
+                        nr, nc = cr + dr, ccc + dc
+                        if 0 <= nr < work.shape[0] and 0 <= nc < work.shape[1] and not seen[nr, nc] and int(work[nr, nc]) == val:
+                            seen[nr, nc] = True
+                            q.append((nr, nc))
+                area = len(cells)
+                rmin = min(r0 for r0, _ in cells)
+                rmax = max(r0 for r0, _ in cells)
+                cmin = min(c0 for _, c0 in cells)
+                cmax = max(c0 for _, c0 in cells)
+                h = rmax - rmin + 1
+                w = cmax - cmin + 1
+                # store both dims in max_height placeholder as encoded tuple via list append below
+                objects.append((val, area, h * 1000 + w))
+
+        if len(objects) != len(slots):
+            return None
+
+        # Sort by area (small to large) to match slot order in training behavior.
+        objects.sort(key=lambda x: (x[1], x[0]))
+
+        out = np.zeros_like(grid)
+        out[rows - 1, :] = base_color
+        out[rows - 2, :] = slot_row
+
+        for (color, area, enc_hw), (start, end) in zip(objects, slots):
+            h0, w0 = divmod(enc_hw, 1000)
+            slot_w = end - start + 1
+
+            candidates = []
+            for w in {w0, h0}:
+                if w > 0 and area % w == 0:
+                    h = area // w
+                    candidates.append((w, h))
+
+            picked = None
+            for w, h in candidates:
+                if w == slot_w and h <= rows - 1:
+                    picked = (w, h)
+                    break
+            if picked is None:
+                return None
+
+            w, h = picked
+            left = start
+            top = (rows - 2) - (h - 1)
+            bottom = rows - 2
+            out[top : bottom + 1, left : left + w] = color
+
+        return out
+
+    def solve_81c0276b_frequency_histogram(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve pattern like 81c0276b:
+        - Detect separator color that forms full divider rows and columns.
+        - Partition into cell blocks between dividers.
+        - Count non-separator colors appearing in cells.
+        - Build compact histogram: one row per color, sorted by increasing frequency,
+          each row filled left-to-right with that color repeated `count` times.
+        """
+        rows, cols = grid.shape
+
+        full_row_colors = [int(grid[r, 0]) for r in range(rows) if np.all(grid[r, :] == grid[r, 0]) and int(grid[r, 0]) != 0]
+        full_col_colors = [int(grid[0, c]) for c in range(cols) if np.all(grid[:, c] == grid[0, c]) and int(grid[0, c]) != 0]
+        sep_candidates = set(full_row_colors) & set(full_col_colors)
+        if len(sep_candidates) != 1:
+            return None
+        sep = next(iter(sep_candidates))
+
+        divider_rows = [r for r in range(rows) if np.all(grid[r, :] == sep)]
+        divider_cols = [c for c in range(cols) if np.all(grid[:, c] == sep)]
+
+        row_cuts = [-1] + divider_rows + [rows]
+        col_cuts = [-1] + divider_cols + [cols]
+
+        counts: dict[int, int] = {}
+        for ri in range(len(row_cuts) - 1):
+            r0, r1 = row_cuts[ri] + 1, row_cuts[ri + 1]
+            if r0 >= r1:
+                continue
+            for ci in range(len(col_cuts) - 1):
+                c0, c1 = col_cuts[ci] + 1, col_cuts[ci + 1]
+                if c0 >= c1:
+                    continue
+                cell = grid[r0:r1, c0:c1]
+                vals = [int(v) for v in np.unique(cell) if int(v) != 0 and int(v) != sep]
+                if not vals:
+                    continue
+                if len(vals) != 1:
+                    return None
+                color = vals[0]
+                counts[color] = counts.get(color, 0) + 1
+
+        if not counts:
+            return None
+
+        items = sorted(counts.items(), key=lambda kv: (kv[1], kv[0]))
+        out_h = len(items)
+        out_w = max(cnt for _, cnt in items)
+        out = np.zeros((out_h, out_w), dtype=int)
+
+        for r, (color, cnt) in enumerate(items):
+            out[r, :cnt] = color
+
+        return out
+
+    def solve_60a26a3e_connect_crosses(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve pattern like 60a26a3e:
+        - Detect "cross-with-empty-center" motifs made from one color (arms at up/down/left/right).
+        - For motif centers that share the same row or column, draw a connector between the
+          facing arms using the learned connector color.
+
+        This reproduces the training behavior where red motifs are connected by blue lines
+        only through the gap between motifs.
+        """
+        rows, cols = grid.shape
+        nonzero = [int(c) for c in np.unique(grid) if int(c) != 0]
+        if len(nonzero) != 1:
+            return None
+        motif_color = nonzero[0]
+
+        line_color = self._learn_added_output_color(arc_problem)
+        if line_color is None:
+            return None
+
+        centers: list[tuple[int, int]] = []
+        for r in range(1, rows - 1):
+            for c in range(1, cols - 1):
+                if int(grid[r, c]) != 0:
+                    continue
+                if (
+                    int(grid[r - 1, c]) == motif_color
+                    and int(grid[r + 1, c]) == motif_color
+                    and int(grid[r, c - 1]) == motif_color
+                    and int(grid[r, c + 1]) == motif_color
+                ):
+                    centers.append((r, c))
+
+        if not centers:
+            return None
+
+        out = grid.copy()
+
+        # Horizontal connectors between motifs on the same row.
+        by_row: dict[int, list[int]] = {}
+        for r, c in centers:
+            by_row.setdefault(r, []).append(c)
+        for r, cols_on_row in by_row.items():
+            cols_on_row.sort()
+            for i in range(len(cols_on_row) - 1):
+                left_c = cols_on_row[i]
+                right_c = cols_on_row[i + 1]
+                for c in range(left_c + 2, right_c - 1):
+                    if int(out[r, c]) == 0:
+                        out[r, c] = line_color
+
+        # Vertical connectors between motifs in the same column.
+        by_col: dict[int, list[int]] = {}
+        for r, c in centers:
+            by_col.setdefault(c, []).append(r)
+        for c, rows_on_col in by_col.items():
+            rows_on_col.sort()
+            for i in range(len(rows_on_col) - 1):
+                top_r = rows_on_col[i]
+                bottom_r = rows_on_col[i + 1]
+                for r in range(top_r + 2, bottom_r - 1):
+                    if int(out[r, c]) == 0:
+                        out[r, c] = line_color
+
+        return out
+
+    def _learn_added_output_color(self, arc_problem: ArcProblem) -> int | None:
+        """Learn the unique non-zero color introduced in outputs but absent in inputs."""
+        learned = set()
+        for train_set in arc_problem.training_set():
+            train_in = train_set.get_input_data().data()
+            train_out = train_set.get_output_data().data()
+            in_colors = {int(c) for c in np.unique(train_in) if int(c) != 0}
+            out_colors = {int(c) for c in np.unique(train_out) if int(c) != 0}
+            added = out_colors - in_colors
+            if len(added) != 1:
+                return None
+            learned |= added
+        if len(learned) != 1:
+            return None
+        return next(iter(learned))
+
+    def solve_31d5ba1a_xor_halves(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve pattern like 31d5ba1a:
+        - Input is two equal-height blocks stacked vertically.
+        - Treat non-zero cells in the top and bottom block as binary masks.
+        - Output is the XOR of those masks using the learned output color.
+
+        Why this works for 31d5ba1a:
+        the top 3 rows (color 9) and bottom 3 rows (color 4) are occupancy masks;
+        output marks locations where exactly one of the two masks has a filled cell.
+        """
+        rows, cols = grid.shape
+        if rows % 2 != 0:
+            return None
+
+        half = rows // 2
+        top = grid[:half, :]
+        bottom = grid[half:, :]
+
+        top_mask = top != 0
+        bottom_mask = bottom != 0
+        xor_mask = np.logical_xor(top_mask, bottom_mask)
+
+        output_color = self._learn_nonzero_output_color(arc_problem)
+        if output_color is None:
+            return None
+
+        out = np.zeros((half, cols), dtype=int)
+        out[xor_mask] = output_color
+        return out
+
+    def _learn_nonzero_output_color(self, arc_problem: ArcProblem) -> int | None:
+        """Infer the unique non-zero output color from training outputs."""
+        colors = set()
+        for train_set in arc_problem.training_set():
+            out = train_set.get_output_data().data()
+            for color in np.unique(out):
+                color = int(color)
+                if color != 0:
+                    colors.add(color)
+        if len(colors) != 1:
+            return None
+        return next(iter(colors))
+
+    def _fill_closed_regions_with_hint_majority(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray:
+        """
+        Strategy for tasks like 4b6b68e5:
+        - find large connected single-color components that act as closed outlines
+        - for each enclosed area, fill with the most frequent non-zero hint color inside
+        - erase stray non-outline/hint pixels outside filled enclosed regions
+        """
+        rows, cols = grid.shape
+        dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+        def components_of_color(color: int) -> list[list[tuple[int, int]]]:
+            seen = np.zeros((rows, cols), dtype=bool)
+            comps: list[list[tuple[int, int]]] = []
+            for r in range(rows):
+                for c in range(cols):
+                    if seen[r, c] or int(grid[r, c]) != color:
+                        continue
+                    q = deque([(r, c)])
+                    seen[r, c] = True
+                    comp: list[tuple[int, int]] = []
+                    while q:
+                        cr, cc = q.popleft()
+                        comp.append((cr, cc))
+                        for dr, dc in dirs:
+                            nr, nc = cr + dr, cc + dc
+                            if 0 <= nr < rows and 0 <= nc < cols and not seen[nr, nc] and int(grid[nr, nc]) == color:
+                                seen[nr, nc] = True
+                                q.append((nr, nc))
+                    comps.append(comp)
+            return comps
+
+        def enclosed_cells(boundary_cells: list[tuple[int, int]]) -> list[tuple[int, int]]:
+            wall = np.zeros((rows, cols), dtype=bool)
+            for r, c in boundary_cells:
+                wall[r, c] = True
+
+            outside = np.zeros((rows, cols), dtype=bool)
+            q = deque()
+
+            for r in range(rows):
+                for c in range(cols):
+                    if (r == 0 or r == rows - 1 or c == 0 or c == cols - 1) and not wall[r, c]:
+                        outside[r, c] = True
+                        q.append((r, c))
+
+            while q:
+                r, c = q.popleft()
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols and not wall[nr, nc] and not outside[nr, nc]:
+                        outside[nr, nc] = True
+                        q.append((nr, nc))
+
+            enclosed_list: list[tuple[int, int]] = []
+            for r in range(rows):
+                for c in range(cols):
+                    if not wall[r, c] and not outside[r, c]:
+                        enclosed_list.append((r, c))
+            return enclosed_list
+
+        output = grid.copy()
+
+        # Keep true outlines and newly filled pixels; all other non-zero pixels are erased.
+        keep = np.zeros((rows, cols), dtype=bool)
+
+        for color in map(int, np.unique(grid)):
+            if color == 0:
+                continue
+            for comp in components_of_color(color):
+                # Keep all substantial components (outlines/objects).
+                if len(comp) >= 6:
+                    for r, c in comp:
+                        keep[r, c] = True
+                else:
+                    # tiny blobs are usually hints/noise
+                    continue
+
+                inside = enclosed_cells(comp)
+                if not inside:
+                    continue
+
+                counts: dict[int, int] = {}
+                for r, c in inside:
+                    v = int(grid[r, c])
+                    if v != 0:
+                        counts[v] = counts.get(v, 0) + 1
+
+                if not counts:
+                    continue
+
+                fill_color = max(counts.items(), key=lambda kv: kv[1])[0]
+                for r, c in inside:
+                    output[r, c] = fill_color
+                    keep[r, c] = True
+
+        for r in range(rows):
+            for c in range(cols):
+                if int(output[r, c]) != 0 and not keep[r, c]:
+                    output[r, c] = 0
+
+        return output
