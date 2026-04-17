@@ -14,6 +14,7 @@ class ArcAgent:
         predictions: list[np.ndarray] = []
 
         strategies = [
+            self.solve_28e73c20_spiral_maze,
             self.solve_bbb1b8b6_overlay_if_disjoint,
             self.solve_992798f6_dominant_axis_path,
             self.solve_18419cfa_reflect_in_frames,
@@ -54,6 +55,60 @@ class ArcAgent:
 
 
 
+
+    def solve_28e73c20_spiral_maze(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve 28e73c20-like tasks (blank input -> deterministic spiral maze pattern).
+        Draw a single-pixel-width spiral path with one-cell corridors using color 3.
+        """
+        if np.any(grid != 0):
+            return None
+        rows, cols = grid.shape
+        if rows != cols:
+            return None
+
+        n = rows
+        out = np.zeros((n, n), dtype=int)
+        path_color = self._learn_nonzero_output_color(arc_problem)
+        if path_color is None:
+            path_color = 3
+
+        dirs = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+        d = 0
+        r = c = 0
+        out[r, c] = path_color
+
+        def can_step(nr: int, nc: int, pr: int, pc: int) -> bool:
+            if not (0 <= nr < n and 0 <= nc < n):
+                return False
+            if int(out[nr, nc]) != 0:
+                return False
+            # Keep one-cell corridor from existing path (except the previous cell).
+            for dr, dc in dirs:
+                ar, ac = nr + dr, nc + dc
+                if 0 <= ar < n and 0 <= ac < n and int(out[ar, ac]) == path_color and not (ar == pr and ac == pc):
+                    return False
+            return True
+
+        while True:
+            moved = False
+            for nd in (d, (d + 1) % 4):
+                dr, dc = dirs[nd]
+                nr, nc = r + dr, c + dc
+                if can_step(nr, nc, r, c):
+                    d = nd
+                    r, c = nr, nc
+                    out[r, c] = path_color
+                    moved = True
+                    break
+            if not moved:
+                break
+
+        # Even-sized grids in this family include one extra center-left link cell.
+        if n % 2 == 0:
+            out[n // 2, n // 2 - 1] = path_color
+
+        return out
 
     def solve_bbb1b8b6_overlay_if_disjoint(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
         """
