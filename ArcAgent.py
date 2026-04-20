@@ -471,6 +471,14 @@ class ArcAgent:
             return None
 
         out = grid.copy()
+        segment_nonzero_counts = [
+            int(np.sum((grid[r0:r1, :] != 0) & (grid[r0:r1, :] != sep)))
+            for (r0, r1) in row_segments
+        ]
+        segment_nonzero_counts = [
+            int(np.sum((grid[r0:r1, :] != 0) & (grid[r0:r1, :] != sep)))
+            for (r0, r1) in row_segments
+        ]
         out[r3, c3] = 0
         out[nr, nc] = 3
         return out
@@ -1093,63 +1101,92 @@ class ArcAgent:
         sep = next(iter(sep_candidates))
 
         divider_rows = [r for r in range(rows) if np.all(grid[r, :] == sep)]
-        segments: list[tuple[int, int]] = []
+        row_segments: list[tuple[int, int]] = []
         prev = -1
         for dr in divider_rows + [rows]:
             r0, r1 = prev + 1, dr
             if r0 < r1:
-                segments.append((r0, r1))
+                row_segments.append((r0, r1))
             prev = dr
-        if len(segments) < 2:
+        if len(row_segments) < 2:
             return None
 
-        sep_cols = {c for c in range(cols) if np.all(grid[:, c] == sep)}
-        out = grid.copy()
+        divider_cols = [c for c in range(cols) if np.all(grid[:, c] == sep)]
+        col_segments: list[tuple[int, int]] = []
+        prev = -1
+        for dc in divider_cols + [cols]:
+            c0, c1 = prev + 1, dc
+            if c0 < c1:
+                col_segments.append((c0, c1))
+            prev = dc
+        if not col_segments:
+            return None
 
-        def color_set(r0: int, r1: int) -> set[int]:
-            vals = {int(v) for v in np.unique(grid[r0:r1, :])}
+        out = grid.copy()
+        segment_nonzero_counts = []
+        for r0, r1 in row_segments:
+            segment_nonzero_counts.append(int(np.sum((grid[r0:r1, :] != 0) & (grid[r0:r1, :] != sep))))
+
+        def color_set(r0: int, r1: int, c0: int, c1: int) -> set[int]:
+            vals = {int(v) for v in np.unique(grid[r0:r1, c0:c1])}
             vals.discard(0)
             vals.discard(sep)
             return vals
 
-        for i in range(len(segments) - 1):
-            a0, a1 = segments[i]
-            b0, b1 = segments[i + 1]
+        for i in range(len(row_segments) - 1):
+            a0, a1 = row_segments[i]
+            b0, b1 = row_segments[i + 1]
             if (a1 - a0) != (b1 - b0):
                 continue
 
-            set_a = color_set(a0, a1)
-            set_b = color_set(b0, b1)
-            if not set_a and not set_b:
+            total_a = segment_nonzero_counts[i]
+            total_b = segment_nonzero_counts[i + 1]
+            row_set_a = color_set(a0, a1, 0, cols)
+            row_set_b = color_set(b0, b1, 0, cols)
+            if total_a == 0 and total_b == 0:
                 continue
 
-            src = None
-            tgt = None
-            cnt_a = int(np.sum((grid[a0:a1, :] != 0) & (grid[a0:a1, :] != sep)))
-            cnt_b = int(np.sum((grid[b0:b1, :] != 0) & (grid[b0:b1, :] != sep)))
+            for c0, c1 in col_segments:
+                set_a = color_set(a0, a1, c0, c1)
+                set_b = color_set(b0, b1, c0, c1)
+                if not set_a and not set_b:
+                    continue
 
-            if set_a == set_b and set_a:
+                cnt_a = int(np.sum((grid[a0:a1, c0:c1] != 0) & (grid[a0:a1, c0:c1] != sep)))
+                cnt_b = int(np.sum((grid[b0:b1, c0:c1] != 0) & (grid[b0:b1, c0:c1] != sep)))
+                if cnt_a == cnt_b:
+                    continue
+
                 if cnt_a > cnt_b:
-                    src, tgt = (a0, a1), (b0, b1)
-                elif cnt_b > cnt_a:
-                    src, tgt = (b0, b1), (a0, a1)
+                    src_rows = (a0, a1)
+                    tgt_rows = (b0, b1)
+                    src_set, tgt_set = set_a, set_b
+                    tgt_segment_total = total_b
+                    tgt_row_set = row_set_b
+                    cnt_src, cnt_tgt = cnt_a, cnt_b
                 else:
-                    continue
-            elif set_a < set_b and set_a:  # A strict subset of B, A not empty
-                src, tgt = (b0, b1), (a0, a1)
-            elif set_b < set_a and set_b:  # B strict subset of A, B not empty
-                src, tgt = (a0, a1), (b0, b1)
-            else:
-                continue
+                    src_rows = (b0, b1)
+                    tgt_rows = (a0, a1)
+                    src_set, tgt_set = set_b, set_a
+                    tgt_segment_total = total_a
+                    tgt_row_set = row_set_a
+                    cnt_src, cnt_tgt = cnt_b, cnt_a
 
-            sr0, sr1 = src
-            tr0, tr1 = tgt
-            src_flip = np.flipud(grid[sr0:sr1, :])
-
-            for c in range(cols):
-                if c in sep_cols:
+                if cnt_src <= cnt_tgt:
                     continue
-                out[tr0:tr1, c] = src_flip[:, c]
+                if tgt_segment_total == 0:
+                    continue
+
+                # Copy only when poorer block colors are compatible with richer block colors.
+                if not tgt_set.issubset(src_set):
+                    continue
+                if not tgt_set and src_set.isdisjoint(tgt_row_set):
+                    continue
+
+                sr0, sr1 = src_rows
+                tr0, tr1 = tgt_rows
+                src_flip = np.flipud(grid[sr0:sr1, c0:c1])
+                out[tr0:tr1, c0:c1] = src_flip
 
         return out
 
