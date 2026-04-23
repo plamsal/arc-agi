@@ -118,7 +118,7 @@ class ArcAgent:
                     left_color,  ll = arm_extent(my_grid, r, c,  0, -1)
                     right_color, rl = arm_extent(my_grid, r, c,  0,  1)
 
-                    if not (up_color and down_color and left_color and right_color):
+                    if None in (up_color, down_color, left_color, right_color):
                         continue
 
                     if cell == bg_color:
@@ -279,9 +279,9 @@ class ArcAgent:
                             continue
                         # Exactly one of the pair must be a box shape color;
                         # the other is the new color it maps to.
-                        if cell in shape_colors and cell2 not in box_all_colors:
+                        if cell in shape_colors and cell2 not in shape_colors:
                             mapping[cell] = cell2
-                        elif cell2 in shape_colors and cell not in box_all_colors:
+                        elif cell2 in shape_colors and cell not in shape_colors:
                             mapping[cell2] = cell
             return mapping
 
