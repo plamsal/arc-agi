@@ -257,32 +257,33 @@ class ArcAgent:
             my_rows, my_cols = g.shape
             box_all_colors = {int(c) for c in np.unique(box)}
             box_bg = most_common(box)
-            # Shape colors: non-background colors inside the box that are candidates for remapping
             shape_colors = box_all_colors - {box_bg, grid_bg}
+
+            # Colors appearing exactly once in the grid are hint "new" colors
+            color_counts = {}
+            for v in g.flatten():
+                v = int(v)
+                if v != grid_bg:
+                    color_counts[v] = color_counts.get(v, 0) + 1
+            single_pixel_colors = {c for c, cnt in color_counts.items() if cnt == 1}
 
             mapping = {}
             for r in range(my_rows):
                 for c in range(my_cols):
                     cell = int(g[r, c])
-                    if cell == grid_bg:
+                    if cell not in single_pixel_colors:
                         continue
                     if top <= r <= bottom and left <= c <= right:
                         continue
-                    # Check both right-neighbor (horizontal) and down-neighbor (vertical)
-                    for r2, c2 in [(r, c+1), (r+1, c)]:
-                        if not (0 <= r2 < my_rows and 0 <= c2 < my_cols):
+                    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        nr, nc = r + dr, c + dc
+                        if not (0 <= nr < my_rows and 0 <= nc < my_cols):
                             continue
-                        if top <= r2 <= bottom and left <= c2 <= right:
+                        neighbor = int(g[nr, nc])
+                        if neighbor == grid_bg:
                             continue
-                        cell2 = int(g[r2, c2])
-                        if cell2 == grid_bg:
-                            continue
-                        # Exactly one of the pair must be a box shape color;
-                        # the other is the new color it maps to.
-                        if cell in shape_colors and cell2 not in shape_colors:
-                            mapping[cell] = cell2
-                        elif cell2 in shape_colors and cell not in shape_colors:
-                            mapping[cell2] = cell
+                        if neighbor in shape_colors:
+                            mapping[neighbor] = cell
             return mapping
 
         def apply_mapping(box, mapping):
