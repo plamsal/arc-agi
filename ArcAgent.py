@@ -39,6 +39,7 @@ class ArcAgent:
             self.solve_992798f6_dominant_axis_path,
             self.solve_18419cfa_reflect_in_frames,
             self.solve_2546ccf6_mirror_richer_segment,
+            self.solve_d931c21c_keep_color_one_mask,
             self.solve_195ba7dc_or_halves,
             self.solve_81c0276b_frequency_histogram,
             self.solve_67c52801_pack_rectangles_into_slots,
@@ -1082,6 +1083,29 @@ class ArcAgent:
 
         out = np.zeros_like(left, dtype=int)
         out[out_mask] = out_color
+        return out
+
+    def solve_d931c21c_keep_color_one_mask(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
+        """
+        Solve d931c21c-like inverse cases:
+        keep only color-1 pixels, clear everything else to 0.
+        """
+        for ts in arc_problem.training_set():
+            train_in = ts.get_input_data().data()
+            train_out = ts.get_output_data().data()
+
+            expected = np.zeros_like(train_in, dtype=int)
+            expected[train_in == 1] = 1
+
+            if not np.array_equal(expected, train_out):
+                return None
+
+            out_colors = {int(v) for v in np.unique(train_out) if int(v) != 0}
+            if out_colors and out_colors != {1}:
+                return None
+
+        out = np.zeros_like(grid, dtype=int)
+        out[grid == 1] = 1
         return out
 
     def solve_2546ccf6_mirror_richer_segment(self, grid: np.ndarray, arc_problem: ArcProblem) -> np.ndarray | None:
